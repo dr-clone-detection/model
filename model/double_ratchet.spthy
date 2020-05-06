@@ -1,0 +1,865 @@
+// This is a Tamarin model of Signal's double ratchet with a clone-detection
+// mechanism. Communicating parties can suffer from state loss (single-state 
+// loss and total-state loss) and an attacker can impersonate a user by 
+// cloning their device.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+theory double_ratchet 
+
+begin
+
+functions: MAC/2, KDF/3, h/1
+builtins: diffie-hellman, symmetric-encryption, multiset
+
+// BEGIN Restrictions
+
+restriction at_most_one_association_per_pair_of_users:
+    "All userA userB #i #j.
+     AssociateUsers(userA, userB) @ i &
+     AssociateUsers(userA, userB) @ j
+     ==> #i = #j"
+
+restriction users_cannot_associate_with_themselves:
+    "All user #i. AssociateUsers(user, user) @ i ==> F"
+
+restriction no_parallel_initializations:
+    "All userThread1 userThread2 user partner epochKey1 epochKey2 
+     #i1 #i2 #j1 #j2.
+     StartInitialize(userThread1, user, partner, epochKey1) @ i1 &
+     StartInitialize(userThread2, partner, user, epochKey1) @ i2 &
+     StartInitialize(userThread1, user, partner, epochKey2) @ j1 &
+     StartInitialize(userThread2, partner, user, epochKey2) @ j2 &
+     not epochKey1 = epochKey2
+     ==> (i1 < j1 & i1 < j2 & i2 < j1 & i2 < j2) |
+         (j1 < i1 & j1 < i2 & j2 < i1 & j2 < i2)"
+
+restriction messages_are_in_order:
+    "All senderThread receiverThread sender receiver payload1 payload2 
+     #i1 #i2 #j1 #j2. i1 < i2 &
+     SendPayload(senderThread, sender, receiver, payload1) @ i1 & 
+     SendPayload(senderThread, sender, receiver, payload2) @ i2 &
+     ReceivePayload(receiverThread, receiver, sender, payload1) @ j1 & 
+     ReceivePayload(receiverThread, receiver, sender, payload2) @ j2
+     ==> j1 < j2"
+
+restriction equality:
+    "All x y #i. Eq(x, y) @ i ==> x = y"
+
+restriction inequality:
+    "All x y #i. Neq(x, y) @ i ==> not(x = y)"
+
+restriction invalid_mac:
+    "All x y #i. InvalidMAC(x, y) @ i ==> not(x = y)"
+
+restriction detect_low_counters:
+    "All currentRcvCtr inRcvCtr #i.
+     MessageNumberIsTooLow(currentRcvCtr, inRcvCtr) @ i
+     ==>
+     Ex x. currentRcvCtr = inRcvCtr + x"
+
+// END Restrictions
+
+// BEGIN Custom Network
+
+
+
+
+
+// END Custom Network
+
+// BEGIN Setup
+
+rule CreateUser [color=ffb433]:
+    [ Fr(~userID) ]
+    --[ CreateUser(~userID) ]->
+    [ !User(~userID) ]
+
+rule AssociateUsers [color=ffb433]:
+    [ !User(~userA)
+    , !User(~userB) ]
+    --[ AssociateUsers(~userA, ~userB)
+      , AssociateUsers(~userB, ~userA) ]->
+    [ StartUser(~userA, ~userB, 'INIT_INITIALIZER')
+    , StartUser(~userB, ~userA, 'INIT_RESPONDER') ]
+
+rule CommunicationStartWithPartner [color=ffb433]:
+    let
+        dummyPartnerPublicKey = 'g'^~dummyPartnerPrivateKey
+        rootKey = KDF('1', 'RK', 'NULL')
+        prevRootKey = KDF('1', 'RK', 'NULL')
+        privateKey = ~dummyPrivateKey
+        partnerPublicKey = dummyPartnerPublicKey
+        rcvChainKey = KDF('1', 'CONSTANT', 'NULL')
+        prevRcvChainKey = KDF('1', 'CONSTANT', 'NULL')
+        sndChainKey = KDF('1', 'CONSTANT', 'NULL')
+        rcvCtr = '0'
+        sndCtr = '0' + '0'
+        dummyEpochKey = h(rootKey)
+    in
+    [ StartUser(~user, ~partner, state)
+    , Fr(~userThread)
+    , Fr(~dummyPrivateKey)
+    , Fr(~dummyPartnerPrivateKey) ]
+    --[ StartChain(~userThread, ~user, ~partner) ]->
+    [ UserState(~userThread, ~user, ~partner, state, rootKey,
+                privateKey, partnerPublicKey, rcvChainKey, sndChainKey, 
+                dummyEpochKey, sndCtr, rcvCtr, prevRootKey, prevRcvChainKey) ]
+
+rule InitInitiatorStart [color=f5e642]:
+    let 
+        rootKey = KDF('1', 'RK', ~rk)
+        nullPrevRootKey = KDF('1', 'RK', 'NULL')
+        nullPrevRcvChainKey = KDF('1', 'CONSTANT', 'NULL')
+        publicKey = 'g'^~privateKey
+        epochKey = h(rootKey)
+        rcvCtrZero = '0'
+        sndCtrZero = '0' + '0'
+    in
+    [ UserState(~userThread, ~user, ~partner, 'INIT_INITIALIZER', oldRootKey, 
+                ~oldPrivateKey, oldPartnerPublicKey, rcvChainKey, sndChainKey,
+                oldEpochKey, sndCtr, rcvCtr, 
+                oldPrevRootKey, oldPrevRcvChainKey)[no_precomp]
+    , Fr(~rk)
+    , Fr(~privateKey)
+    , Fr(~initiatorToken) ]
+    --[ Step(~userThread, ~user, ~partner)
+      , StartInitialize(~userThread, ~user, ~partner, epochKey)
+      , SendPayload(~userThread, ~user, ~partner, rootKey) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'INITIALIZATION_STARTED',rootKey,~privateKey,oldPartnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'INITIALIZATION_STARTED',rootKey,~privateKey,oldPartnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+
+    , InitDataInitiator(~partner, ~user, rootKey, publicKey) ]
+
+rule InitResponder [color=f5e642]:
+    let 
+        nullPrevRootKey = KDF('1', 'RK', 'NULL')
+        nullPrevRcvChainKey = KDF('1', 'CONSTANT', 'NULL')
+        publicKey = 'g'^~privateKey
+        epochKey = h(rootKey)
+        rcvCtrZero = '0'
+        sndCtrZero = '0' + '0'
+    in
+    [ UserState(~userThread, ~user, ~partner, state, oldRootKey, 
+                ~oldPrivateKey, oldPartnerPublicKey, rcvChainKey, sndChainKey,
+                oldEpochKey, sndCtr, rcvCtr, 
+                oldPrevRootKey, oldPrevRcvChainKey)[no_precomp]
+    , InitDataInitiator(~user, ~partner, rootKey, partnerPublicKey)
+    , Fr(~privateKey)
+    , Fr(~responderToken) ]
+    --[ StartInitialize(~userThread, ~user, ~partner, epochKey)
+      , Initialized(~userThread, ~user, ~partner, epochKey)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, rootKey)
+      , SendPayload(~userThread, ~user, ~partner, rootKey) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+
+    , InitDataResponder(~partner, ~user, rootKey, publicKey) ]
+
+rule InitInitiatorFinish [color=f5e642]:
+    let 
+        nullPrevRootKey = KDF('1', 'RK', 'NULL')
+        nullPrevRcvChainKey = KDF('1', 'CONSTANT', 'NULL')
+        epochKey = h(rootKey)
+        rcvCtrZero = '0'
+        sndCtrZero = '0' + '0'
+    in
+    [ UserState(~userThread, ~user, ~partner, 'INITIALIZATION_STARTED', rootKey, 
+                ~privateKey, oldPartnerPublicKey, 
+                KDF('1', 'CONSTANT', 'NULL'), KDF('1', 'CONSTANT', 'NULL'), epochKey, 
+                sndCtrZero, rcvCtrZero, 
+                nullPrevRootKey, nullPrevRcvChainKey)
+    , InitDataResponder(~user, ~partner, rootKey, partnerPublicKey) ]
+    --[ Initialized(~userThread, ~user, ~partner, epochKey)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtrZero, rcvCtrZero)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, rootKey) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,nullPrevRootKey,nullPrevRcvChainKey)
+ ]
+
+// END Setup
+
+// BEGIN Sending
+
+
+
+
+rule SendStartKeyChainNormal [color=c1fa70]:
+    let
+        dhOut = partnerPublicKey^~newPrivateKey
+        publicKey = 'g'^~newPrivateKey
+        rootKey = KDF('1', oldDhOut, rk)
+        nextRootKey = KDF('1', dhOut, rootKey)
+        sndChainKey = KDF('1', 'CONSTANT', oldSndChainKey)
+        rcvChainKey = KDF('1', 'CONSTANT', oldRcvChainKey)
+        newSndChainKey = KDF('2', dhOut, rootKey)
+        nextSndChainKey = KDF('1', 'CONSTANT', newSndChainKey)
+        nextMessageKey = KDF('2', 'CONSTANT', newSndChainKey)
+        message = <senc(~msgPayload, nextMessageKey), publicKey, sndCtr>
+        messageMAC = MAC(message, epochKey)
+    in
+    [ UserState(~userThread, ~user, ~partner, 'RECEIVING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)[no_precomp]
+    , Fr(~newPrivateKey)
+    , Fr(~msgPayload) ]
+    --[ StartSenderKeyChainNormal(~userThread, nextRootKey, ~newPrivateKey, partnerPublicKey,
+                              rcvChainKey, nextSndChainKey)
+      , StartKeyChain(~userThread, nextRootKey, ~newPrivateKey, partnerPublicKey, rcvChainKey, nextSndChainKey)
+      , SendsMessage(~userThread, ~user, ~partner, message, epochKey, sndCtr)
+      , SendsMessageNormal(~userThread, ~user, ~partner, message)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , SendPayload(~userThread, ~user, ~partner, ~msgPayload) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'SENDING',nextRootKey,~newPrivateKey,partnerPublicKey,rcvChainKey,nextSndChainKey,epochKey,sndCtr + '0',rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'SENDING',nextRootKey,~newPrivateKey,partnerPublicKey,rcvChainKey,nextSndChainKey,epochKey,sndCtr + '0',rcvCtr,prevRootKey,prevRcvChainKey)
+
+    , OutSendStartKeyChainNormal(~user, ~partner, <message, messageMAC>) ]
+
+
+rule Out_SendStartKeyChainNormal [color=ffffff]:
+    [ OutSendStartKeyChainNormal(~user, ~partner, message) ]
+    --[]->
+    [ Rcv(~partner, ~user, message)[no_precomp] ]
+
+
+
+rule SendStartKeyChainStateLoss [color=ea70fa]:
+    let
+        dhOut = partnerPublicKey^~newPrivateKey
+        publicKey = 'g'^~newPrivateKey
+        rootKey = KDF('1', oldDhOut, rk)
+        nextRootKey = KDF('1', dhOut, rootKey)
+        sndChainKey = KDF('1', 'CONSTANT', oldSndChainKey)
+        rcvChainKey = KDF('1', 'CONSTANT', oldRcvChainKey)
+        newSndChainKey = KDF('2', dhOut, rootKey)
+        nextSndChainKey = KDF('1', 'CONSTANT', newSndChainKey)
+        nextMessageKey = KDF('2', 'CONSTANT', newSndChainKey)
+        message = <senc(~msgPayload, nextMessageKey), publicKey, sndCtr>
+        messageMAC = MAC(message, epochKey)
+    in
+    [ UserState(~userThread, ~user, ~partner, 'RECEIVING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)[no_precomp]
+    , Fr(~newPrivateKey)
+    , Fr(~msgPayload) ]
+    --[ StartSenderKeyChainStateLoss(~userThread, rootKey, ~privateKey, partnerPublicKey,
+                              rcvChainKey, sndChainKey)
+      , StartKeyChain(~userThread, rootKey, ~privateKey, partnerPublicKey, rcvChainKey, sndChainKey)
+      , SendsMessage(~userThread, ~user, ~partner, message, epochKey, sndCtr)
+      , SendsMessageStateLoss(~userThread, ~user, ~partner, message)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , SendPayload(~userThread, ~user, ~partner, ~msgPayload) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+
+    , OutSendStartKeyChainStateLoss(~user, ~partner, <message, messageMAC>) ]
+
+
+rule Out_SendStartKeyChainStateLoss [color=ffffff]:
+    [ OutSendStartKeyChainStateLoss(~user, ~partner, message) ]
+    --[]->
+    [ Rcv(~partner, ~user, message)[no_precomp] ]
+
+
+
+
+
+rule SendMessageNormal [color=dcffab]:
+    let
+        publicKey = 'g'^~privateKey
+        rootKey = KDF('1', dhOut, rk)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        rcvChainKey = KDF('1', something, oldRcvChainKey)
+        nextSndChainKey = KDF('1', 'CONSTANT', sndChainKey)
+        nextMessageKey = KDF('2', 'CONSTANT', sndChainKey)
+        message = <senc(~msgPayload, nextMessageKey), publicKey, sndCtr>
+        messageMAC = MAC(message, epochKey)
+    in
+    [ UserState(~userThread, ~user, ~partner, 'SENDING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Fr(~msgPayload) ]
+    --[ SendsMessage(~userThread, ~user, ~partner, message, epochKey, sndCtr)
+      , SendsMessageNormal(~userThread, ~user, ~partner, message) 
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , SendPayload(~userThread, ~user, ~partner, ~msgPayload)
+      , Neq(sndChainKey, KDF('1', 'CONSTANT', 'NULL')) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,nextSndChainKey,epochKey,sndCtr + '0',rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,nextSndChainKey,epochKey,sndCtr + '0',rcvCtr,prevRootKey,prevRcvChainKey)
+
+    , OutSendMessageNormal(~user, ~partner, <message, messageMAC>) ]
+
+
+rule Out_SendMessageNormal [color=ffffff]:
+    [ OutSendMessageNormal(~sender, ~receiver, message) ]
+    --[]->
+    [ Rcv(~receiver, ~sender, message)[no_precomp] ]
+
+
+
+rule SendMessageSingleStateLoss [color=f6c7fc]:
+    let
+        publicKey = 'g'^~privateKey
+        rootKey = KDF('1', dhOut, rk)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        rcvChainKey = KDF('1', something, oldRcvChainKey)
+        nextSndChainKey = KDF('1', 'CONSTANT', sndChainKey)
+        nextMessageKey = KDF('2', 'CONSTANT', sndChainKey)
+        message = <senc(~msgPayload, nextMessageKey), publicKey, sndCtr>
+        messageMAC = MAC(message, epochKey)
+    in
+    [ UserState(~userThread, ~user, ~partner, 'SENDING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Fr(~msgPayload) ]
+    --[ SendsMessage(~userThread, ~user, ~partner, message, epochKey, sndCtr)
+      , SendsMessageSingleStateLoss(~userThread, ~user, ~partner, message) 
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , SendPayload(~userThread, ~user, ~partner, ~msgPayload)
+      , Neq(sndChainKey, KDF('1', 'CONSTANT', 'NULL')) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'SENDING',rootKey,~privateKey,partnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+
+    , OutSendMessageSingleStateLoss(~user, ~partner, <message, messageMAC>) ]
+
+
+rule Out_SendMessageSingleStateLoss [color=ffffff]:
+    [ OutSendMessageSingleStateLoss(~sender, ~receiver, message) ]
+    --[]->
+    [ Rcv(~receiver, ~sender, message)[no_precomp] ]
+
+
+// END Sending
+
+// BEGIN Receiving
+
+rule ReceiveStartKeyChain [color=6685ff]:
+    let
+        dhOut = newPartnerPublicKey^~privateKey
+        nextRootKey = KDF('1', dhOut, rootKey)
+        newRcvChainKey = KDF('2', dhOut, rootKey)
+        nextRcvChainKey = KDF('1', 'CONSTANT', newRcvChainKey)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        messageKey = KDF('2', 'CONSTANT', newRcvChainKey)
+        message = <senc(msgPayload, messageKey), newPartnerPublicKey, rcvCtr+'0'>
+    in
+    [ UserState(~userThread, ~user, ~partner, 'SENDING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)[no_precomp]
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ]
+    --[ StartReceiverKeyChain(~userThread, nextRootKey, ~privateKey, 
+                              newPartnerPublicKey, nextRcvChainKey, sndChainKey)
+      , StartKeyChain(~userThread, rootKey, ~privateKey, newPartnerPublicKey, 
+                      nextRcvChainKey, sndChainKey)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr+'0')
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, rcvCtr+'0') 
+      , Eq(messageMAC, MAC(message, epochKey)) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',nextRootKey,~privateKey,newPartnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr+'0',rootKey,rcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',nextRootKey,~privateKey,newPartnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr+'0',rootKey,rcvChainKey)
+ ]
+
+rule ReceiveStartKeyChainAgain [color=6685ff]:
+    let
+        dhOut = newPartnerPublicKey^~privateKey
+        nextRootKey = KDF('1', dhOut, prevRootKey)
+        newRcvChainKey = KDF('2', dhOut, prevRootKey)
+        nextRcvChainKey = KDF('1', 'CONSTANT', newRcvChainKey)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        messageKey = KDF('2', 'CONSTANT', newRcvChainKey)
+        message = <senc(msgPayload, messageKey), newPartnerPublicKey, rcvCtr>
+        
+    in
+    [ UserState(~userThread, ~user, ~partner, 'RECEIVING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ]
+    --[ StartReceiverKeyChain(~userThread, nextRootKey, ~privateKey, 
+                              newPartnerPublicKey, nextRcvChainKey, sndChainKey)
+      , StartKeyChain(~userThread, rootKey, ~privateKey, newPartnerPublicKey, 
+                         nextRcvChainKey, sndChainKey)
+      , ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, rcvCtr) 
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , Eq(messageMAC, MAC(message, epochKey)) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',nextRootKey,~privateKey,newPartnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',nextRootKey,~privateKey,newPartnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+ ]
+
+rule ReceiveMessage [color=c0ccfc]:
+    let
+        rootKey = KDF('1', dhOut, rk)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        nextRcvChainKey = KDF('1', 'CONSTANT', rcvChainKey)
+        messageKey = KDF('2', 'CONSTANT', rcvChainKey)
+        message = <senc(msgPayload, messageKey), partnerPublicKey, rcvCtr+'0'>
+    in
+    [ UserState(~userThread, ~user, ~partner, 'RECEIVING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ] 
+    --[ ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, rcvCtr+'0') 
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr+'0')
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , Eq(messageMAC, MAC(message, epochKey)) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr+'0',rootKey,rcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr+'0',rootKey,rcvChainKey)
+ ]
+
+rule ReceiveMessageFromSingleStateLoss [color=c0ccfc]:
+    let
+        rootKey = KDF('1', dhOut, rk)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        nextRcvChainKey = KDF('1', 'CONSTANT', prevRcvChainKey)
+        messageKey = KDF('2', 'CONSTANT', prevRcvChainKey)
+        message = <senc(msgPayload, messageKey), partnerPublicKey, rcvCtr>
+    in
+    [ UserState(~userThread, ~user, ~partner, 'RECEIVING', rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ] 
+    --[ ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, rcvCtr) 
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, rcvCtr)
+      , SendReceiveStep(~userThread, ~user, ~partner, epochKey, sndCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , Eq(messageMAC, MAC(message, epochKey)) ]->
+    [ 
+    UserState(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'RECEIVING',rootKey,~privateKey,partnerPublicKey,nextRcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+ ]
+
+
+
+
+rule ReceiveMessageDetectCloneInvalidMAC [color=c596fa]:
+    let
+        rootKey = KDF('1', dhOut, rk)
+        dummyPartnerPublicKey = 'g'^~dummyPartnerPrivateKey
+        rcvChainKey = KDF('1', something, oldRcvChainKey)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        currMessageKey = KDF('2', 'CONSTANT', rcvChainKey)
+        prevMessageKey = KDF('2', 'CONSTANT', prevRcvChainKey)
+        message = <senc(msgPayload, messageKey), inPartnerPublicKey, inRcvCtr>
+    in
+    [ UserState(~userThread, ~user, ~partner, state, rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Fr(~dummyPartnerPrivateKey)
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ]
+    --[ ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, inRcvCtr)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, inRcvCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , DetectClone(~userThread, ~user, ~partner, epochKey, inRcvCtr, messageMAC)
+      , InvalidMAC(messageMAC, MAC(message, epochKey))
+      , Neq(state, 'INIT_RESPONDER')
+      , Neq(state, 'INIT_INITIALIZER')
+      , Neq(state, 'INITIALIZATION_STARTED') ]->
+    [ 
+    UserState(~userThread,~user,~partner,'INIT_INITIALIZER',rootKey,~privateKey,dummyPartnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'INIT_INITIALIZER',rootKey,~privateKey,dummyPartnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+ ]
+
+
+
+rule ReceiveMessageDetectCloneMessageNumberTooLow [color=c596fa]:
+    let
+        rootKey = KDF('1', dhOut, rk)
+        dummyPartnerPublicKey = 'g'^~dummyPartnerPrivateKey
+        rcvChainKey = KDF('1', something, oldRcvChainKey)
+        sndChainKey = KDF('1', something, oldSndChainKey)
+        currMessageKey = KDF('2', 'CONSTANT', rcvChainKey)
+        prevMessageKey = KDF('2', 'CONSTANT', prevRcvChainKey)
+        message = <senc(msgPayload, messageKey), inPartnerPublicKey, inRcvCtr>
+    in
+    [ UserState(~userThread, ~user, ~partner, state, rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Fr(~dummyPartnerPrivateKey)
+    , Rcv(~user, ~partner, <message, messageMAC>)[no_precomp] ]
+    --[ ReceivesMessage(~userThread, ~user, ~partner, message, epochKey, inRcvCtr)
+      , ChainStep(~userThread, ~user, ~partner, epochKey, sndCtr, inRcvCtr)
+      , Step(~userThread, ~user, ~partner)
+      , ReceivePayload(~userThread, ~user, ~partner, msgPayload)
+      , DetectClone(~userThread, ~user, ~partner, epochKey, inRcvCtr, messageMAC)
+      , Eq(messageMAC, MAC(message, epochKey)), 
+  MessageNumberIsTooLow(rcvCtr, inRcvCtr)
+      , Neq(state, 'INIT_RESPONDER')
+      , Neq(state, 'INIT_INITIALIZER')
+      , Neq(state, 'INITIALIZATION_STARTED') ]->
+    [ 
+    UserState(~userThread,~user,~partner,'INIT_INITIALIZER',rootKey,~privateKey,dummyPartnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+  , UserData(~userThread,~user,~partner,'INIT_INITIALIZER',rootKey,~privateKey,dummyPartnerPublicKey,rcvChainKey,sndChainKey,epochKey,sndCtr,rcvCtr,prevRootKey,prevRcvChainKey)
+ ]
+
+
+// END Receiving
+
+// BEGIN Total-State Loss
+
+
+rule TotalStateLoss [color=ff70ba]:
+    let
+        rootKey = KDF('1', dhOut, rk)
+        dummyEpochKey = h(KDF('1', 'RK', 'NULL'))
+        dummyPartnerPublicKey = 'g'^~dummyPartnerPrivateKey
+        rcvCtrZero = '0'
+        sndCtrZero = '0' + '0'
+    in
+    [ UserState(~userThread, ~user, ~partner, state, rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)
+    , Fr(~dummyPrivateKey)
+    , Fr(~dummyPartnerPrivateKey) ]
+    --[ TotalStateLoss(~userThread) 
+      , Step(~userThread, ~user, ~partner)
+      , Neq(state, 'INIT_INITIALIZER')
+      , Neq(state, 'INIT_RESPONDER') ]->
+    [ 
+    UserState(~userThread,~user,~partner,'INIT_INITIALIZER',KDF('1', 'RK', 'NULL'),~dummyPrivateKey,dummyPartnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,KDF('1', 'RK', 'NULL'),KDF('1', 'CONSTANT', 'NULL'))
+  , UserData(~userThread,~user,~partner,'INIT_INITIALIZER',KDF('1', 'RK', 'NULL'),~dummyPrivateKey,dummyPartnerPublicKey,KDF('1', 'CONSTANT', 'NULL'),KDF('1', 'CONSTANT', 'NULL'),epochKey,sndCtrZero,rcvCtrZero,KDF('1', 'RK', 'NULL'),KDF('1', 'CONSTANT', 'NULL'))
+ ]
+
+
+// END Total-State Loss
+
+// BEGIN State Compromise
+
+rule StateCloneUser [color=aa0000]:
+    [ UserData(~userThread, ~user, ~partner, state, rootKey, ~privateKey, 
+               partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+               sndCtr, rcvCtr, prevRootKey, prevRcvChainKey)[no_precomp]
+    , Fr(~attackerThread) ]
+    --[ CloneUserThread(~userThread, ~attackerThread, ~user, ~partner)
+      , CloneUser(~user, ~partner) ]->
+    [ UserState(~attackerThread, ~user, ~partner, state, rootKey, ~privateKey, 
+                partnerPublicKey, rcvChainKey, sndChainKey, epochKey, 
+                sndCtr, rcvCtr, prevRootKey, prevRcvChainKey) ]
+
+// END State Compromise
+
+// BEGIN Sanity Statement
+
+lemma can_receive_message [heuristic=S]: exists-trace
+    "Ex receiverThread receiver sender message epochKey rcvCtr #i. 
+     ReceivesMessage(receiverThread, receiver, sender, message, epochKey, rcvCtr) @ i"
+
+// END Sanity Statement
+
+// BEGIN Lemmas
+
+lemma step_must_be_preceded_by_associate 
+      [reuse, use_induction, heuristic=S]:
+    "All senderThread sender receiver #i. 
+    Step(senderThread, sender, receiver) @ i
+    ==>
+    (Ex #j. j < i & AssociateUsers(sender, receiver) @ j)"
+
+lemma step_of_non_clone_must_be_preceded_by_start 
+      [reuse, use_induction, heuristic=S]:
+    "All senderThread sender receiver #i. 
+    Step(senderThread, sender, receiver) @ i &
+    (not Ex #j. j < i & CloneUser(sender, receiver) @ j) 
+    ==>
+    (Ex #j. j < i & StartChain(senderThread, sender, receiver) @ j)"
+
+lemma send_of_non_clone_must_be_preceded_by_start 
+      [reuse]:
+    "All senderThread sender receiver msg epochKey sndCtr  #i. 
+    SendsMessage(senderThread, sender, receiver, msg, epochKey, sndCtr) @ i &
+    (not Ex #j. j < i & CloneUser(sender, receiver) @ j)
+    ==>
+    (Ex #j. j < i & StartChain(senderThread, sender, receiver) @ j)"
+
+lemma steps_from_different_users_implies_user_was_cloned
+      [reuse,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start]:
+    "All thread1 thread2 user partner #j1 #j2. 
+    Step(thread1, user, partner)[-] @ j1 &
+    Step(thread2, user, partner)[-] @ j2 &
+    not TotalStateLoss(thread1) @ j1 &
+    not TotalStateLoss(thread2) @ j2 &
+    not thread1 = thread2
+    ==>
+    Ex #i. (i < j1 | i < j2) & CloneUser(user, partner) @ i"
+
+lemma chain_step_of_non_clone_must_be_preceded_by_initialize 
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start]:
+    "All userThread user partner epochKey sndCtr rcvCtr #i. 
+      ChainStep(userThread, user, partner, epochKey, sndCtr, rcvCtr) @ i
+    & not TotalStateLoss(userThread) @ i
+    & (not Ex #j. (j < i) & CloneUser(user, partner) @ j)
+    ==>
+    (Ex #j. (#j = #i | j < i)
+     & Initialized(userThread, user, partner, epochKey) @ j)"
+
+lemma initialize_is_unique_for_epoch_key 
+      [reuse, heuristic=S,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize]:
+    "All user userThread partner epochKey #i #j.
+     Initialized(userThread, user, partner, epochKey)[+] @ i &
+     Initialized(userThread, user, partner, epochKey)[+] @ j
+     ==> #i = #j"
+
+lemma initialize_precedes_other_chain_step_for_epoch_key 
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=step_must_be_preceded_by_associate]:
+    "All userThread user partner epochKey sndCtr rcvCtr #i #j. 
+     Initialized(userThread, user, partner, epochKey) @ j
+     & ChainStep(userThread, user, partner, epochKey, sndCtr, rcvCtr) @ i
+     & (not Ex #j. (j < i) & CloneUser(user, partner) @ j)
+     ==> (#i = #j | j < i)"
+
+// Can be proved automatically: It is crucial to first use the induction 
+// hypothesis, then solve the ChainStep, in all the remaining cases, first 
+// solve the UserState stemming from the ChainStep.
+lemma honest_user_must_have_current_epoch_key
+     [reuse, use_induction, heuristic=S,
+      hide_lemma=step_of_non_clone_must_be_preceded_by_associate,
+      hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+      hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize]:
+    "All user userThread partner epochKey1 epochKey2 epochKey3 sndCtr rcvCtr
+     #i #j #k. i < j & j < k 
+     & ChainStep(userThread, user, partner, epochKey3, sndCtr, rcvCtr)[+] @ k
+     & StartInitialize(userThread, user, partner, epochKey1)[+] @ i
+     & StartInitialize(userThread, user, partner, epochKey2)[+] @ j
+     & not epochKey1 = epochKey2
+     & (not Ex #l. (l < k) & CloneUser(user, partner) @ l)
+     & (not Ex #l. (l < k) & CloneUser(partner, user) @ l)
+     ==>
+     not epochKey1 = epochKey3"
+
+lemma chain_step_of_non_clone_must_be_preceded_by_unique_initialize 
+      [reuse, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start
+       /*hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize*/]:
+    "All userThread user partner epochKey sndCtr rcvCtr #i. 
+      ChainStep(userThread, user, partner, epochKey, sndCtr, rcvCtr)[+] @ i
+    & (not Ex #j. (j < i) & CloneUser(user, partner) @ j)
+    & (not Ex #j. (j < i) & CloneUser(partner, user) @ j)
+    ==>
+    (Ex #j. (#j = #i | j < i)
+     & Initialized(userThread, user, partner, epochKey) @ j 
+     & not (Ex epochKeyK #k. j < k & k < i &
+          Initialized(userThread, user, partner, epochKeyK) @ k))"
+
+lemma sound_clone_detection_epoch_key 
+     [reuse, heuristic=S,
+      hide_lemma=step_must_be_preceded_by_associate,
+      hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+      hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+      hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize/*,
+      hide_lemma=honest_user_must_have_current_epoch_key*/]:
+    "All userThread user partner epochKey inRcvCtr messageMAC #i.
+     DetectClone(userThread, user, partner, epochKey, inRcvCtr, messageMAC)[+] @ i &
+     (Ex validMAC. InvalidMAC(messageMAC, validMAC) @ i) &
+     (not Ex #j. j < i & CloneUser(user, partner) @ j)
+     ==> 
+     Ex #j. j < i & CloneUser(partner, user) @ j"
+
+lemma snd_nr_of_non_clone_increases_monotonically_for_epoch_key
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key]:
+    "All thread sender receiver sndCtr1 sndCtr2 rcvCtr1 rcvCtr2 epochKey #j1 #j2. 
+    ChainStep(thread, sender, receiver, epochKey, sndCtr1, rcvCtr1)[+] @ j1 &
+    ChainStep(thread, sender, receiver, epochKey, sndCtr2, rcvCtr2)[+] @ j2 & 
+    (not Ex x y. MessageNumberIsTooLow(x, y) @ j1) & 
+    (not Ex x y. MessageNumberIsTooLow(x, y) @ j2) & 
+    j1 < j2 &
+    (not Ex #i. i < j2 & CloneUser(sender, receiver) @ i)
+    ==>
+    (sndCtr1 = sndCtr2 | Ex x. sndCtr2 = sndCtr1 + x)"
+
+lemma received_rcv_nr_from_non_clone_increases_monotonically_for_epoch_key
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key]:
+    "All thread sender receiver msg1 msg2 rcvCtr1 rcvCtr2 epochKey #j1 #j2. 
+    ReceivesMessage(thread, receiver, sender, msg1, epochKey, rcvCtr1)[+] @ j1 &
+    ReceivesMessage(thread, receiver, sender, msg2, epochKey, rcvCtr2)[+] @ j2 & 
+    j1 < j2 &
+    (not Ex #i. i < j2 & CloneUser(sender, receiver) @ i) &
+    (not Ex #i. i < j2 & CloneUser(receiver, sender) @ i)
+    ==>
+    (rcvCtr1 = rcvCtr2 | Ex x. rcvCtr2 = rcvCtr1 + x)"
+
+lemma chain_step_precedes_detect_clone_for_epoch_key
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key,
+       hide_lemma=snd_nr_of_non_clone_increases_monotonically_for_epoch_key,
+       hide_lemma=received_rcv_nr_from_non_clone_increases_monotonically_for_epoch_key]:
+    "All senderThread sender receiver epochKey sndCtr rcvCtr number messageMAC 
+     #i #j. 
+    ChainStep(senderThread, sender, receiver, epochKey, sndCtr, rcvCtr)[+] @ i &
+    DetectClone(senderThread, sender, receiver, epochKey, number, messageMAC)[+] @ j &
+    (not Ex #k. (k < i | k < j) & CloneUser(sender, receiver) @ k) &
+    (not Ex #k. (k < i | k < j) & CloneUser(receiver, sender) @ k)
+    ==>
+    (#i = #j | i < j)"
+
+lemma non_zero_rcv_nr_must_have_been_received
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key]:
+    "All thread sender receiver sndCtr rcvCtr epochKey #j. 
+    ChainStep(thread, receiver, sender, epochKey, sndCtr, rcvCtr)[+] @ j &
+    not rcvCtr = '0' &
+    (not Ex #i. i < j & CloneUser(sender, receiver) @ i) &
+    (not Ex #i. i < j & CloneUser(receiver, sender) @ i)
+    ==>
+    Ex msg #i. (#i = #j | i < j) &
+    ReceivesMessage(thread, receiver, sender, msg, epochKey, rcvCtr)[+] @ i"
+
+lemma rcv_nr_from_non_clone_increases_monotonically_for_epoch_key_at_detect
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key,
+       hide_lemma=snd_nr_of_non_clone_increases_monotonically_for_epoch_key]:
+    "All thread sender receiver sndCtr1 rcvCtr1 rcvCtr2 epochKey messageMAC #j1 #j2. 
+    DetectClone(thread, receiver, sender, epochKey, rcvCtr2, messageMAC)[+] @ j2 & 
+    ChainStep(thread, receiver, sender, epochKey, sndCtr1, rcvCtr1) @ j1 &
+    j1 < j2 &
+    (not Ex #i. i < j2 & CloneUser(sender, receiver) @ i) &
+    (not Ex #i. i < j2 & CloneUser(receiver, sender) @ i)
+    ==>
+    (rcvCtr1 = rcvCtr2 | Ex x. rcvCtr2 = rcvCtr1 + x)"
+
+lemma rcv_nr_from_non_clone_increases_monotonically_for_epoch_key
+      [reuse, use_induction, heuristic=S,
+       hide_lemma=step_must_be_preceded_by_associate,
+       hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+       hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize,
+       hide_lemma=honest_user_must_have_current_epoch_key,
+       hide_lemma=snd_nr_of_non_clone_increases_monotonically_for_epoch_key,
+       hide_lemma=non_zero_rcv_nr_must_have_been_received]:
+    "All thread sender receiver sndCtr1 sndCtr2 rcvCtr1 rcvCtr2 epochKey #j1 #j2. 
+    ChainStep(thread, receiver, sender, epochKey, sndCtr2, rcvCtr2)[+] @ j2 & 
+    ChainStep(thread, receiver, sender, epochKey, sndCtr1, rcvCtr1)[+] @ j1 &
+    j1 < j2 &
+    (not Ex #i. i < j2 & CloneUser(sender, receiver) @ i) &
+    (not Ex #i. i < j2 & CloneUser(receiver, sender) @ i)
+    ==>
+    (rcvCtr1 = rcvCtr2 | Ex x. rcvCtr2 = rcvCtr1 + x)"
+
+lemma messages_from_different_senders_implies_user_was_cloned
+      [reuse]:
+    "All thread1 thread2 sender receiver m1 m2 sndCtr1 sndCtr2 
+     epochKey1 epochKey2 #j1 #j2. 
+    SendsMessage(thread1, sender, receiver, m1, epochKey1, sndCtr1)[-] @ j1 &
+    SendsMessage(thread2, sender, receiver, m2, epochKey2, sndCtr2)[-] @ j2 & 
+    not thread1 = thread2
+    ==>
+    Ex #i. (i < j1 | i < j2) & CloneUser(sender, receiver) @ i"
+
+lemma sound_clone_detection_message_number [reuse,heuristic=S,
+     hide_lemma=step_must_be_preceded_by_associate,
+     hide_lemma=step_of_non_clone_must_be_preceded_by_start,
+     hide_lemma=send_of_non_clone_must_be_preceded_by_start,
+     hide_lemma=honest_user_must_have_current_epoch_key,
+     hide_lemma=chain_step_of_non_clone_must_be_preceded_by_initialize,
+     hide_lemma=chain_step_of_non_clone_must_be_preceded_by_unique_initialize]:
+    "All userThread user partner epochKey inRcvCtr messageMAC #i.
+     DetectClone(userThread, user, partner, epochKey, inRcvCtr, messageMAC) @ i &
+     not (Ex validMAC. InvalidMAC(messageMAC, validMAC) @ i)
+     & (not Ex #j. j < i & CloneUser(user, partner) @ j)
+     ==> 
+     Ex #j. j < i & CloneUser(partner, user) @ j"
+
+// BEGIN Main Statement
+
+lemma sound_clone_detection
+    [heuristic=S,
+     hide_lemma=chain_step_of_non_clone_must_be_preceded_by_association,
+     hide_lemma=send_of_non_clone_must_be_preceded_by_association,
+     hide_lemma=messages_from_different_senders_implies_user_was_cloned,
+     hide_lemma=detect_clone_implies_receives_from_different_senders,
+     hide_lemma=detect_clone_implies_sends_from_different_senders]:
+    "All userThread user partner epochKey inRcvCtr messageMAC #i.
+    DetectClone(userThread, user, partner, epochKey, inRcvCtr, messageMAC) @ i &
+    (not Ex #j. j < i & CloneUser(user, partner) @ j)
+    ==>
+    Ex #j. j < i & CloneUser(partner, user) @ j"
+
+// END Main Statement
+
+// END Lemmas
+
+end
