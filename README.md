@@ -1,6 +1,6 @@
 # A Formal Model of the Double-Ratchet Algorithm with Clone Detection
 
-This repository accompanies the paper [Clone Detection in Secure Messaging: Improving Post-Compromise Security in Practice](https://people.cispa.io/cas.cremers/downloads/papers/CFKN2020-messaging_cloning.pdf) by Cas Cremers, Jaiden Fairoze, Benjamin Kiesl, and Aurora Naska; it contains a formal model of a modified version of [Signal's double-ratchet algorithm](https://signal.org/docs/specifications/doubleratchet/). This version of the double ratchet allows a user to detect when their communication partner was cloned. The model is created for the theorem prover [Tamarin](https://tamarin-prover.github.io/) and is discussed in a CCS submission that is currently under review.
+This repository accompanies the paper [Clone Detection in Secure Messaging: Improving Post-Compromise Security in Practice](https://people.cispa.io/cas.cremers/downloads/papers/CFKN2020-messaging_cloning.pdf) by [Cas Cremers](https://people.cispa.io/cas.cremers), [Jaiden Fairoze](https://jaiden.info/), [Benjamin Kiesl](https://benjaminkiesl.github.io/), and Aurora Naska; it contains a formal model of a modified version of [Signal's double-ratchet algorithm](https://signal.org/docs/specifications/doubleratchet/). This version of the double ratchet allows a user to detect when their communication partner was cloned. The model is created for the theorem prover [Tamarin](https://tamarin-prover.github.io/) and is discussed in a CCS submission that is currently under review.
 
 ## Prerequisites
 
